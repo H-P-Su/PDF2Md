@@ -245,6 +245,19 @@ def reset_download(date: str, doi: str) -> None:
     update_metadata(date, doi, pdf_path="", md_path="", keywords=[])
 
 
+def mark_ignored(date: str, doi: str) -> None:
+    """Mark a downloaded paper as a negative ML example (ignore for recommendations).
+
+    Sets ml_label='negative' in metadata.json without hiding the paper.
+    """
+    update_metadata(date, doi, ml_label="negative")
+
+
+def mark_ignored_clear(date: str, doi: str) -> None:
+    """Remove the negative ML label from a paper."""
+    update_metadata(date, doi, ml_label="")
+
+
 def mark_excluded(date: str, doi: str) -> None:
     """Hide a paper and mark it as excluded from ML.
 

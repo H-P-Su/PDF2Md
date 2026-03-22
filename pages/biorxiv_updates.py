@@ -13,7 +13,7 @@ from services.biorxiv import (
     fetch_papers, save_metadata, load_cached_papers, is_cached,
     has_pdf, has_markdown, download_pdf, extract_keywords,
     update_keywords_file, update_metadata, load_metadata,
-    mark_excluded, reset_download, doi_to_key, _paper_dir,
+    mark_excluded, mark_ignored, mark_ignored_clear, reset_download, doi_to_key, _paper_dir,
     get_paper_counts_for_month, get_downloaded_counts_for_month, load_all_downloaded_papers,
 )
 from services.converter import convert_pdf_to_markdown
@@ -45,6 +45,8 @@ if "biorxiv_selected" not in st.session_state:
     st.session_state.biorxiv_selected = set()
 if "biorxiv_filter_downloaded" not in st.session_state:
     st.session_state.biorxiv_filter_downloaded = False
+if "biorxiv_sort_by_score" not in st.session_state:
+    st.session_state.biorxiv_sort_by_score = False
 # Queue: doi → {doi, date_str, title, version}; persists across date navigation
 if "biorxiv_download_queue" not in st.session_state:
     st.session_state.biorxiv_download_queue = {}
@@ -202,6 +204,32 @@ with col_title:
     st.title("bioRxiv Updates")
 with col_opts:
     with st.popover("⚙️"):
+        # ── ML model ──────────────────────────────────────────────────────
+        st.markdown("**ML scoring**")
+        from services.ml import train_and_score_all, load_model_meta, model_exists
+        if model_exists():
+            mm = load_model_meta()
+            st.caption(
+                f"Mode: {mm.get('mode','?')} · "
+                f"{mm.get('n_positive',0)}+ / {mm.get('n_negative',0)}− · "
+                f"Trained {mm.get('trained_at','')[:10]}"
+            )
+        else:
+            st.caption("No model trained yet.")
+        if st.button("🤖 Retrain & score all", use_container_width=True, key="opt_retrain"):
+            with st.spinner("Training and scoring…"):
+                stats = train_and_score_all()
+            if "error" in stats:
+                st.error(stats["error"])
+            else:
+                st.success(
+                    f"Done — {stats['mode']} mode · "
+                    f"{stats['n_positive']}+ / {stats['n_negative']}− · "
+                    f"{stats['scored']} papers scored."
+                )
+
+        st.divider()
+
         # ── Sync ──────────────────────────────────────────────────────────
         st.markdown("**Sync to PDF Library**")
         st.caption("Register all downloaded bioRxiv papers in the PDF Library database.")
@@ -376,7 +404,7 @@ if _q:
 # ── Action bar ────────────────────────────────────────────────────────────────
 st.divider()
 all_dois = {p["doi"] for p in papers}
-col_sa, col_da, col_dl, col_q, col_filt = st.columns([1.3, 1.3, 2.4, 1.6, 1.6])
+col_sa, col_da, col_dl, col_q, col_filt, col_sort = st.columns([1.3, 1.3, 2.4, 1.6, 1.6, 1.6])
 
 with col_sa:
     if st.button("Select all", use_container_width=True):
@@ -411,6 +439,13 @@ with col_filt:
     if st.button(filt_label, use_container_width=True,
                  type="primary" if filt_active else "secondary"):
         st.session_state.biorxiv_filter_downloaded = not filt_active
+        st.rerun()
+with col_sort:
+    sort_by_score = st.session_state.biorxiv_sort_by_score
+    sort_label    = "⭐ By score" if sort_by_score else "Sort by score"
+    if st.button(sort_label, use_container_width=True,
+                 type="primary" if sort_by_score else "secondary"):
+        st.session_state.biorxiv_sort_by_score = not sort_by_score
         st.rerun()
 with col_dl:
     selected_papers_preview = [p for p in papers if p["doi"] in st.session_state.biorxiv_selected]
@@ -595,6 +630,13 @@ if st.session_state.biorxiv_filter_downloaded and not visible_papers:
     st.info("No downloaded papers for this date.")
     st.stop()
 
+if st.session_state.biorxiv_sort_by_score:
+    visible_papers = sorted(
+        visible_papers,
+        key=lambda p: p.get("ml_score", -1),
+        reverse=True,
+    )
+
 current_cat = None
 
 for paper in visible_papers:
@@ -624,8 +666,12 @@ for paper in visible_papers:
             badges += f" `v{version}`"
         if is_dl:
             badges += " ✅"
+        if paper.get("ml_label") == "negative":
+            badges += " 🚫"
+        ml_score = paper.get("ml_score")
+        score_str = f" ({ml_score:.2f})" if ml_score is not None else ""
 
-        with st.expander(f"{'🔄 ' if version > 1 else ''}**{paper['title']}**{badges}"):
+        with st.expander(f"{'🔄 ' if version > 1 else ''}**{paper['title']}**{score_str}{badges}"):
             st.markdown(f"*{paper['authors']}*")
             st.caption(
                 f"{paper.get('author_corresponding_institution', '')} · "
@@ -690,6 +736,18 @@ for paper in visible_papers:
                                         md_path,
                                     )
                                 st.rerun()
+
+                # ── ML label ──────────────────────────────────────────────
+                is_ignored = paper.get("ml_label") == "negative"
+                ig_label   = "🚫 Ignored (negative example)" if is_ignored else "🚫 Ignore for ML"
+                ig_help    = "Remove negative label" if is_ignored else "Mark as negative training example"
+                if st.button(ig_label, key=f"ignore_{doi_to_key(doi)}",
+                             use_container_width=True, help=ig_help):
+                    if is_ignored:
+                        mark_ignored_clear(date_str, doi)
+                    else:
+                        mark_ignored(date_str, doi)
+                    st.rerun()
 
                 # ── Reset download (incomplete only) ───────────────────────
                 pdf_missing = paper.get("pdf_path") and not Path(paper["pdf_path"]).exists()
