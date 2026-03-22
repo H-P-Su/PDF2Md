@@ -122,7 +122,9 @@ def train(papers: list[dict] | None = None) -> dict:
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model_obj, f)
 
+    prev_version = load_model_meta().get("model_version", 0)
     meta = {
+        "model_version": prev_version + 1,
         "mode":          mode,
         "n_positive":    len(pos),
         "n_negative":    len(neg),
@@ -182,12 +184,68 @@ def train_and_score_all() -> dict:
     if "error" in stats:
         return stats
 
-    scores = score_papers(papers)
+    version = stats["model_version"]
+    scores  = score_papers(papers)
     for paper, score in zip(papers, scores):
         doi      = paper.get("doi", "")
         date_str = paper.get("date", "")
         if doi and date_str:
-            update_metadata(date_str, doi, ml_score=round(score, 4))
+            update_metadata(date_str, doi,
+                            ml_score=round(score, 4),
+                            ml_score_version=version)
 
     stats["scored"] = len(papers)
     return stats
+
+
+def score_all_stale() -> int:
+    """Score every paper across all dates that has a stale or missing ml_score_version.
+
+    Returns total number of papers scored. Does nothing if no model exists.
+    """
+    if not model_exists():
+        return 0
+    total = 0
+    for day_dir in PAPERS_DIR.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"):
+        total += score_papers_for_date(day_dir.name)
+    return total
+
+
+def score_papers_for_date(date_str: str) -> int:
+    """Score papers for a date that are missing or stale (wrong model version).
+
+    Returns the number of papers scored. Does nothing if no model exists.
+    Only papers whose ml_score_version differs from the current model version
+    are scored, so this is cheap when the model hasn't changed.
+    """
+    if not model_exists():
+        return 0
+
+    meta            = load_model_meta()
+    current_version = meta.get("model_version", 0)
+
+    from services.biorxiv import PAPERS_DIR  # avoid circular at module level
+    date_dir = PAPERS_DIR / date_str
+    if not date_dir.exists():
+        return 0
+
+    stale = []
+    for f in date_dir.glob("*/metadata.json"):
+        try:
+            p = json.loads(f.read_text(encoding="utf-8"))
+            if p.get("ml_score_version") != current_version:
+                stale.append(p)
+        except Exception:
+            pass
+
+    if not stale:
+        return 0
+
+    scores = score_papers(stale)
+    for paper, score in zip(stale, scores):
+        doi = paper.get("doi", "")
+        if doi:
+            update_metadata(date_str, doi,
+                            ml_score=round(score, 4),
+                            ml_score_version=current_version)
+    return len(stale)

@@ -1,0 +1,9 @@
+[global]
+disableWidgetStateDuplicationWarning = true
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+# Disable the "Source file changed" watcher pinging external services
+fastReruns = true

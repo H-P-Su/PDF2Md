@@ -206,27 +206,34 @@ with col_opts:
     with st.popover("⚙️"):
         # ── ML model ──────────────────────────────────────────────────────
         st.markdown("**ML scoring**")
-        from services.ml import train_and_score_all, load_model_meta, model_exists
+        from services.ml import train_and_score_all, load_model_meta, model_exists, score_papers_for_date as _spfd
         if model_exists():
             mm = load_model_meta()
             st.caption(
-                f"Mode: {mm.get('mode','?')} · "
+                f"v{mm.get('model_version','?')} · {mm.get('mode','?')} · "
                 f"{mm.get('n_positive',0)}+ / {mm.get('n_negative',0)}− · "
                 f"Trained {mm.get('trained_at','')[:10]}"
             )
         else:
             st.caption("No model trained yet.")
-        if st.button("🤖 Retrain & score all", use_container_width=True, key="opt_retrain"):
-            with st.spinner("Training and scoring…"):
-                stats = train_and_score_all()
+        if st.button("🤖 Retrain model", use_container_width=True, key="opt_retrain"):
+            with st.spinner("Training…"):
+                from services.ml import train, load_all_papers
+                stats = train(load_all_papers())
             if "error" in stats:
                 st.error(stats["error"])
             else:
                 st.success(
-                    f"Done — {stats['mode']} mode · "
-                    f"{stats['n_positive']}+ / {stats['n_negative']}− · "
-                    f"{stats['scored']} papers scored."
+                    f"Retrained — v{stats.get('model_version','?')} · "
+                    f"{stats['mode']} mode · "
+                    f"{stats['n_positive']}+ / {stats['n_negative']}−"
                 )
+        if model_exists():
+            if st.button("📊 Score stale papers", use_container_width=True, key="opt_score_all"):
+                from services.ml import score_all_stale
+                with st.spinner("Scoring…"):
+                    scored = score_all_stale()
+                st.success(f"Scored {scored} stale paper(s).")
 
         st.divider()
 
@@ -348,12 +355,28 @@ if not papers:
     st.info(f"No papers cached for {date_str}. Click **Fetch papers for this date**.")
     st.stop()
 
+# ── Auto-score stale papers for this date ─────────────────────────────────────
+from services.ml import score_papers_for_date, model_exists as _model_exists
+if _model_exists():
+    score_papers_for_date(date_str)
+    papers = load_cached_papers(date_str)  # reload with fresh scores
+
 # Pre-populate selections with already-downloaded papers (once per date)
 if date_str not in st.session_state.biorxiv_inited_dates:
     for p in papers:
         if p.get("pdf_path"):
             st.session_state.biorxiv_selected.add(p["doi"])
     st.session_state.biorxiv_inited_dates.add(date_str)
+
+# Sync biorxiv_selected from checkbox widget states (so action bar counts are current)
+for p in papers:
+    doi = p["doi"]
+    key = f"sel_{doi_to_key(doi)}"
+    if key in st.session_state:
+        if st.session_state[key]:
+            st.session_state.biorxiv_selected.add(doi)
+        else:
+            st.session_state.biorxiv_selected.discard(doi)
 
 # Detect uncheck of a downloaded paper → mark excluded and hide
 needs_rerun = False
@@ -435,7 +458,7 @@ with col_q:
         st.rerun()
 with col_filt:
     filt_active = st.session_state.biorxiv_filter_downloaded
-    filt_label  = "✅ Downloaded" if filt_active else "Show downloaded"
+    filt_label  = "All papers" if filt_active else "Downloaded"
     if st.button(filt_label, use_container_width=True,
                  type="primary" if filt_active else "secondary"):
         st.session_state.biorxiv_filter_downloaded = not filt_active
@@ -702,7 +725,8 @@ for paper in visible_papers:
                         st.info("Markdown not found.")
 
                 with tab_sum:
-                    md_path = paper.get("md_path", "")
+                    md_path   = paper.get("md_path", "")
+                    ollama_ok = _ollama_running()
                     if md_path and summary_exists(md_path):
                         meta = get_summary_meta(md_path)
                         if meta:
@@ -711,8 +735,25 @@ for paper in visible_papers:
                                 f"Generated {meta.get('generated_at', '')[:10]}"
                             )
                         st.markdown(load_summary(md_path))
+                        if st.button("↺ Regenerate summary",
+                                     key=f"regen_sum_{doi_to_key(doi)}",
+                                     disabled=not ollama_ok,
+                                     help="Ollama must be running" if not ollama_ok else ""):
+                            with st.spinner("Regenerating…"):
+                                from services.summarizer import clear_summary
+                                clear_summary(md_path)
+                                generate_summary(Path(md_path).read_text(encoding="utf-8"), md_path)
+                            st.rerun()
                     else:
-                        st.info("Summary not available.")
+                        st.info("No summary yet.")
+                        if st.button("Generate Summary",
+                                     key=f"gen_sum_{doi_to_key(doi)}",
+                                     type="primary",
+                                     disabled=not ollama_ok,
+                                     help="Ollama must be running" if not ollama_ok else ""):
+                            with st.spinner("Generating…"):
+                                generate_summary(Path(md_path).read_text(encoding="utf-8"), md_path)
+                            st.rerun()
 
                 with tab_news:
                     md_path  = paper.get("md_path", "")

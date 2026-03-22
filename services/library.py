@@ -81,6 +81,15 @@ def get_papers_in_folder(folder_id: int | None, sort: str = "title"):
     return rows
 
 
+def get_all_papers(sort: str = "title") -> list:
+    """Return all papers across all folders, sorted by title or created_at."""
+    order = _sort_clause(sort)
+    conn = get_connection()
+    rows = conn.execute(f"SELECT * FROM papers ORDER BY {order}").fetchall()
+    conn.close()
+    return rows
+
+
 def paper_exists(filename: str) -> bool:
     conn = get_connection()
     row = conn.execute("SELECT id FROM papers WHERE filename = ?", (filename,)).fetchone()

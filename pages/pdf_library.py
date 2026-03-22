@@ -15,7 +15,7 @@ from services.summarizer import (
     generate_summary, generate_news,
 )
 from services.library import (
-    save_paper, get_paper, get_papers_in_folder, paper_exists,
+    save_paper, get_paper, get_papers_in_folder, get_all_papers, paper_exists,
     rename_paper, move_paper, delete_paper,
     search_papers_by_title, search_papers_by_content,
     get_all_folders, create_folder, delete_folder,
@@ -40,6 +40,10 @@ _defaults = {
     "mp3_cache": {},          # paper_id -> mp3 bytes or "processing"
     "generating_summary": False,
     "generating_news":    False,
+    "lib_search_query":   "",
+    "lib_search_mode":    "Title",  # "Title" | "Full text"
+    "lib_folder_filter":  None,   # None = all folders
+    "lib_sort":           "date", # "date" | "title" | "folder"
 }
 for key, val in _defaults.items():
     if key not in st.session_state:
@@ -85,11 +89,27 @@ def _select_paper(paper_id: int):
     st.session_state.generating_news = False
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# Handle clickable title and trash links via query params
+if "open_paper" in st.query_params:
+    try:
+        _select_paper(int(st.query_params["open_paper"]))
+    except (ValueError, KeyError):
+        pass
+    del st.query_params["open_paper"]
+    st.rerun()
+
+if "del_paper" in st.query_params:
+    try:
+        st.session_state.pending_delete_paper = int(st.query_params["del_paper"])
+    except (ValueError, KeyError):
+        pass
+    del st.query_params["del_paper"]
+    st.rerun()
+
+
+# ── Sidebar — upload only ──────────────────────────────────────────────────────
 with st.sidebar:
     st.header("PDF Library")
-
-    # ── Upload ──────────────────────────────────────────────────────────────
     st.subheader("Upload")
 
     folders = get_all_folders()
@@ -112,11 +132,9 @@ with st.sidebar:
             if st.button("Convert & Add to Library", type="primary", use_container_width=True):
                 pdf_bytes = uploaded_file.read()
                 title = _clean_title(Path(uploaded_file.name).stem)
-
                 with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                     tmp.write(pdf_bytes)
                     tmp_path = tmp.name
-
                 try:
                     with st.spinner(f'Converting "{title}" …'):
                         md_content = convert_pdf_to_markdown(tmp_path)
@@ -129,118 +147,31 @@ with st.sidebar:
                 finally:
                     os.unlink(tmp_path)
 
-    st.divider()
-
-    # ── Library header + new-folder button ──────────────────────────────────
-    col_hdr, col_new = st.columns([3, 1])
-    with col_hdr:
-        st.subheader("Library")
-    with col_new:
-        if st.button("📁+", help="Create new folder"):
-            st.session_state.show_new_folder = not st.session_state.show_new_folder
-
-    if st.session_state.show_new_folder:
-        with st.form("new_folder_form", clear_on_submit=True):
-            folder_name = st.text_input("Folder name")
-            if st.form_submit_button("Create"):
-                if folder_name.strip():
-                    create_folder(folder_name.strip())
-                    st.session_state.show_new_folder = False
-                    st.rerun()
-
-    # ── Search & sort ────────────────────────────────────────────────────────
-    search_q = st.text_input("Search titles…", key="search_q", label_visibility="collapsed",
-                             placeholder="Search titles…")
-    sort_order = st.radio("Sort by", ["Title A–Z", "Date added"], horizontal=True,
-                          label_visibility="collapsed", key="sort_order_radio")
-    sort_key = "title" if sort_order == "Title A–Z" else "date"
-
-    # ── Paper row renderer ───────────────────────────────────────────────────
-    def _paper_row(paper, folder_label: str = ""):
-        pid    = paper["id"]
-        active  = st.session_state.selected_paper_id == pid
-        pending = st.session_state.pending_delete_paper == pid
-
-        label = paper["title"]
-        if len(label) > 26:
-            label = label[:25] + "…"
-
-        tags = get_paper_tags(pid)
-
-        if pending:
-            st.caption(f'Delete "{paper["title"][:30]}"?')
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("Yes, delete", key=f"confirm_dp_{pid}", type="primary", use_container_width=True):
-                    delete_paper(pid)
-                    if st.session_state.selected_paper_id == pid:
-                        st.session_state.selected_paper_id = None
-                    st.session_state.pending_delete_paper = None
-                    st.rerun()
-            with c2:
-                if st.button("Cancel", key=f"cancel_dp_{pid}", use_container_width=True):
-                    st.session_state.pending_delete_paper = None
-                    st.rerun()
-        else:
-            c1, c2 = st.columns([5, 1])
-            with c1:
-                prefix = "▶ " if active else ""
-                btn_label = f"{prefix}📄 {label}"
-                if folder_label:
-                    btn_label += f"\n  _{folder_label}_"
-                if st.button(btn_label, key=f"p_{pid}", use_container_width=True):
-                    _select_paper(pid)
-                    st.rerun()
-                if tags:
-                    st.markdown(_tag_badges(tags, size="0.7em"), unsafe_allow_html=True)
-            with c2:
-                if st.button("✕", key=f"dp_{pid}", help="Delete"):
-                    st.session_state.pending_delete_paper = pid
-                    st.rerun()
-
-    # ── Search results or normal tree ────────────────────────────────────────
-    if search_q.strip():
-        results = search_papers_by_title(search_q.strip(), sort=sort_key)
-        if results:
-            folder_id_to_name = {f["id"]: f["name"] for f in get_all_folders()}
-            for paper in results:
-                flabel = folder_id_to_name.get(paper["folder_id"], "") if paper["folder_id"] else ""
-                _paper_row(paper, folder_label=flabel)
-        else:
-            st.caption("No titles match.")
-    else:
-        # Root papers
-        for paper in get_papers_in_folder(None, sort=sort_key):
-            _paper_row(paper)
-
-        # Folders
-        for folder in get_all_folders():
-            fid = folder["id"]
-            pending_f = st.session_state.pending_delete_folder == fid
-
-            with st.expander(f"📁 {folder['name']}"):
-                for paper in get_papers_in_folder(fid, sort=sort_key):
-                    _paper_row(paper)
-
-                if pending_f:
-                    st.caption("Delete this folder? Papers will move to Root.")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("Yes, delete", key=f"confirm_df_{fid}", type="primary", use_container_width=True):
-                            delete_folder(fid)
-                            st.session_state.pending_delete_folder = None
-                            st.rerun()
-                    with c2:
-                        if st.button("Cancel", key=f"cancel_df_{fid}", use_container_width=True):
-                            st.session_state.pending_delete_folder = None
-                            st.rerun()
-                else:
-                    if st.button("Delete folder", key=f"df_{fid}", type="secondary"):
-                        st.session_state.pending_delete_folder = fid
-                        st.rerun()
-
 
 # ── Main panel ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Compact caption cells (folder, date) */
+div[data-testid='stCaptionContainer'] {
+    padding-top: 0.1rem !important;
+    padding-bottom: 0.1rem !important;
+    line-height: 1.2 !important;
+}
+/* Trash icon — no box, just the emoji */
+.trash-btn button {
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    min-height: unset !important;
+    color: inherit !important;
+}
+.trash-btn button:hover {
+    background: none !important;
+    opacity: 0.7;
+}
+</style>
+""", unsafe_allow_html=True)
 _col_hdr, _col_gear = st.columns([11, 1])
 with _col_gear:
     with st.popover("⚙️"):
@@ -264,31 +195,197 @@ with _col_gear:
                     new_count += 1
             st.success(f'{new_count} added, {already_count} already registered in "BioRxiv" folder.')
 
+        st.divider()
+        st.markdown("**Folders**")
+        _pop_folders = get_all_folders()
+        for _f in _pop_folders:
+            _cnt = len(get_papers_in_folder(_f["id"]))
+            fc1, fc2 = st.columns([3, 1])
+            with fc1:
+                st.markdown(
+                    f'📁 **{_f["name"]}** <span style="color:#888">({_cnt})</span>',
+                    unsafe_allow_html=True,
+                )
+            with fc2:
+                if st.button("🗑", key=f"pop_delf_{_f['id']}", help=f'Delete "{_f["name"]}"'):
+                    st.session_state.pending_delete_folder = _f["id"]
+                    st.rerun()
+        if not _pop_folders:
+            st.caption("No folders yet.")
+
+        st.divider()
+        st.markdown("**New folder**")
+        with st.form("new_folder_form", clear_on_submit=True):
+            nf_name = st.text_input("Folder name", label_visibility="collapsed",
+                                    placeholder="Folder name…")
+            if st.form_submit_button("Create folder", use_container_width=True):
+                if nf_name.strip():
+                    create_folder(nf_name.strip())
+                    st.rerun()
+
 if st.session_state.selected_paper_id is None:
-    st.title("PDF Library")
-    st.info("Upload a PDF from the sidebar, or select a paper from the library.")
+    # ── Library header row ────────────────────────────────────────────────────
+    all_folders = get_all_folders()
+    folder_map  = {f["id"]: f["name"] for f in all_folders}
 
-    # Content search from welcome screen
-    st.subheader("Search paper content")
-    with st.form("content_search_form"):
-        cq = st.text_input("Search within all paper text…", label_visibility="collapsed",
-                           placeholder="Search within all paper text…")
-        if st.form_submit_button("Search"):
-            if cq.strip():
-                st.session_state.content_search_results = (cq.strip(), search_papers_by_content(cq.strip()))
-                st.rerun()
+    hc1, hc1b, hc2, hc3 = st.columns([4, 1, 2, 2])
+    with hc1:
+        search_q = st.text_input(
+            "Search",
+            value=st.session_state.lib_search_query,
+            placeholder="Search…",
+            label_visibility="collapsed",
+            key="lib_search_input",
+        )
+        if search_q != st.session_state.lib_search_query:
+            st.session_state.lib_search_query = search_q
+            st.rerun()
+    with hc1b:
+        search_mode = st.radio(
+            "Search mode",
+            options=["Title", "Full text"],
+            index=0 if st.session_state.lib_search_mode == "Title" else 1,
+            label_visibility="collapsed",
+            key="lib_search_mode_radio",
+        )
+        if search_mode != st.session_state.lib_search_mode:
+            st.session_state.lib_search_mode = search_mode
+            st.rerun()
+    with hc2:
+        folder_opts = [None] + [f["id"] for f in all_folders]
+        cur_filter  = st.session_state.lib_folder_filter
+        cur_idx     = folder_opts.index(cur_filter) if cur_filter in folder_opts else 0
+        chosen_folder = st.selectbox(
+            "Folder filter",
+            options=folder_opts,
+            index=cur_idx,
+            format_func=lambda x: "All folders" if x is None else folder_map.get(x, "?"),
+            label_visibility="collapsed",
+            key="lib_folder_filter_sel",
+        )
+        if chosen_folder != st.session_state.lib_folder_filter:
+            st.session_state.lib_folder_filter = chosen_folder
+            st.rerun()
+    with hc3:
+        sort_labels = {"date": "Sort: Date", "title": "Sort: Title", "folder": "Sort: Folder"}
+        cur_sort = st.session_state.lib_sort
+        new_sort = st.selectbox(
+            "Sort",
+            options=list(sort_labels.keys()),
+            index=list(sort_labels.keys()).index(cur_sort),
+            format_func=lambda x: sort_labels[x],
+            label_visibility="collapsed",
+            key="lib_sort_sel",
+        )
+        if new_sort != cur_sort:
+            st.session_state.lib_sort = new_sort
+            st.rerun()
 
-    if st.session_state.content_search_results:
-        q, results = st.session_state.content_search_results
-        st.write(f'**{len(results)} paper(s) containing "{q}":**')
-        for paper in results:
-            if st.button(f"📄 {paper['title']}", key=f"cs_{paper['id']}"):
-                _select_paper(paper["id"])
-                st.rerun()
+    st.divider()
+
+    # ── Collect and filter papers ─────────────────────────────────────────────
+    q = st.session_state.lib_search_query.strip()
+
+    if q and st.session_state.lib_search_mode == "Full text":
+        raw_papers = search_papers_by_content(q)
+        if st.session_state.lib_folder_filter is not None:
+            raw_papers = [p for p in raw_papers if p["folder_id"] == st.session_state.lib_folder_filter]
+    else:
+        if st.session_state.lib_folder_filter is not None:
+            raw_papers = get_papers_in_folder(st.session_state.lib_folder_filter)
+        else:
+            raw_papers = get_all_papers()
+        if q:
+            raw_papers = [p for p in raw_papers if q.lower() in p["title"].lower()]
+
+    # Sort
+    if st.session_state.lib_sort == "title":
+        raw_papers = sorted(raw_papers, key=lambda p: p["title"].lower())
+    elif st.session_state.lib_sort == "folder":
+        raw_papers = sorted(raw_papers, key=lambda p: (folder_map.get(p["folder_id"]) or "", p["title"].lower()))
+    else:  # date
+        raw_papers = sorted(raw_papers, key=lambda p: p["created_at"] or "", reverse=True)
+
+    # ── Delete confirmation ───────────────────────────────────────────────────
+    if st.session_state.pending_delete_paper:
+        dpid = st.session_state.pending_delete_paper
+        dp   = next((p for p in raw_papers if p["id"] == dpid), None)
+        if dp:
+            st.warning(f'Delete **{dp["title"]}**? This cannot be undone.')
+            dc1, dc2, _ = st.columns([1, 1, 6])
+            with dc1:
+                if st.button("Yes, delete", type="primary"):
+                    delete_paper(dpid)
+                    st.session_state.pending_delete_paper = None
+                    st.rerun()
+            with dc2:
+                if st.button("Cancel"):
+                    st.session_state.pending_delete_paper = None
+                    st.rerun()
+
+    # Folder delete confirmation
+    if st.session_state.pending_delete_folder:
+        dfid = st.session_state.pending_delete_folder
+        df   = next((f for f in all_folders if f["id"] == dfid), None)
+        if df:
+            st.warning(f'Delete folder **{df["name"]}**? Papers inside will move to Root.')
+            dfc1, dfc2, _ = st.columns([1, 1, 6])
+            with dfc1:
+                if st.button("Yes, delete folder", type="primary"):
+                    delete_folder(dfid)
+                    st.session_state.pending_delete_folder = None
+                    st.rerun()
+            with dfc2:
+                if st.button("Cancel##folder"):
+                    st.session_state.pending_delete_folder = None
+                    st.rerun()
+
+    # ── Paper table ───────────────────────────────────────────────────────────
+    if not raw_papers:
+        if q or st.session_state.lib_folder_filter:
+            st.info("No papers match the current filter.")
+        else:
+            st.info("No papers in the library yet. Upload a PDF from the sidebar.")
+    else:
+        # Column headers
+        th1, th2, th3, th4 = st.columns([7, 1.2, 0.8, 0.4])
+        th1.markdown("**Title**")
+        th2.markdown("**Folder**")
+        th3.markdown("**Added**")
+        th4.markdown("")
+        st.markdown('<hr style="margin:2px 0 6px 0">', unsafe_allow_html=True)
+
+        for paper in raw_papers:
+            fname    = folder_map.get(paper["folder_id"], "") or "Root"
+            date_str = (paper["created_at"] or "")[:10] if paper["created_at"] else ""
+
+            pc1, pc2, pc3, pc4 = st.columns([7, 1.2, 0.8, 0.4], vertical_alignment="center")
+            with pc1:
+                st.markdown(
+                    f'📄 <a href="?open_paper={paper["id"]}" target="_self"'
+                    f' style="text-decoration:none;color:inherit">{paper["title"]}</a>',
+                    unsafe_allow_html=True,
+                )
+            with pc2:
+                st.caption(fname)
+            with pc3:
+                st.caption(date_str)
+            with pc4:
+                st.markdown(
+                    f'<a href="?del_paper={paper["id"]}" target="_self" '
+                    f'style="text-decoration:none;font-size:1.1em;cursor:pointer" '
+                    f'title="Delete paper">🗑</a>',
+                    unsafe_allow_html=True,
+                )
+
 
 else:
     paper = get_paper(st.session_state.selected_paper_id)
     if paper is None:
+        st.session_state.selected_paper_id = None
+        st.rerun()
+
+    if st.button("← Back to library"):
         st.session_state.selected_paper_id = None
         st.rerun()
 
@@ -393,62 +490,64 @@ else:
         st.session_state.mp3_cache[pid] = mp3_bytes
         st.rerun()
 
-    col_move, col_dl = st.columns([3, 3])
+    folders = get_all_folders()
+    folder_map = {f["id"]: f["name"] for f in folders}
+    folder_opts = [None] + [f["id"] for f in folders]
+    current_idx = folder_opts.index(paper["folder_id"]) if paper["folder_id"] in folder_opts else 0
 
-    with col_move:
-        folders = get_all_folders()
-        folder_map = {f["id"]: f["name"] for f in folders}
-        folder_opts = [None] + [f["id"] for f in folders]
-        current_idx = folder_opts.index(paper["folder_id"]) if paper["folder_id"] in folder_opts else 0
+    mp3_filename = Path(paper["filename"]).stem + ".mp3"
+    md_filename  = Path(paper["filename"]).stem + ".md"
 
-        with st.form("move_form"):
+    rc_move, rc3, rc4, rc5 = st.columns([3, 1, 1, 1])
+
+    with rc_move:
+        mv1, mv2 = st.columns([3, 1])
+        with mv1:
             new_folder = st.selectbox(
                 "Move to folder",
                 options=folder_opts,
                 format_func=lambda x: "Root" if x is None else folder_map[x],
                 index=current_idx,
+                label_visibility="collapsed",
+                key="move_folder_sel",
             )
-            if st.form_submit_button("Move"):
+        with mv2:
+            if st.button("Move", use_container_width=True):
                 move_paper(paper["id"], new_folder)
                 st.rerun()
-
-    with col_dl:
-        dl1, dl2, dl3 = st.columns(3)
-        with dl1:
-            with open(paper["pdf_path"], "rb") as f:
-                st.download_button(
-                    "⬇ Download PDF",
-                    data=f.read(),
-                    file_name=paper["filename"],
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-        with dl2:
-            md_filename = Path(paper["filename"]).stem + ".md"
+    with rc3:
+        with open(paper["pdf_path"], "rb") as f:
             st.download_button(
-                "⬇ Download MD",
-                data=Path(paper["md_path"]).read_text(encoding="utf-8"),
-                file_name=md_filename,
-                mime="text/markdown",
+                "⬇ PDF",
+                data=f.read(),
+                file_name=paper["filename"],
+                mime="application/pdf",
                 use_container_width=True,
             )
-        with dl3:
-            mp3_filename = Path(paper["filename"]).stem + ".mp3"
-            if mp3_state is None:
-                if st.button("🔊 Generate MP3", use_container_width=True):
-                    st.session_state.mp3_cache[pid] = "processing"
-                    st.rerun()
-            else:
-                st.download_button(
-                    "⬇ Download MP3",
-                    data=mp3_state,
-                    file_name=mp3_filename,
-                    mime="audio/mpeg",
-                    use_container_width=True,
-                )
-                if st.button("↺ Redo MP3", use_container_width=True, help="Regenerate MP3"):
-                    del st.session_state.mp3_cache[pid]
-                    st.rerun()
+    with rc4:
+        st.download_button(
+            "⬇ MD",
+            data=Path(paper["md_path"]).read_text(encoding="utf-8"),
+            file_name=md_filename,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    with rc5:
+        if mp3_state is None:
+            if st.button("🔊 MP3", use_container_width=True):
+                st.session_state.mp3_cache[pid] = "processing"
+                st.rerun()
+        else:
+            st.download_button(
+                "⬇ MP3",
+                data=mp3_state,
+                file_name=mp3_filename,
+                mime="audio/mpeg",
+                use_container_width=True,
+            )
+            if st.button("↺ MP3", use_container_width=True, help="Regenerate MP3"):
+                del st.session_state.mp3_cache[pid]
+                st.rerun()
 
     st.divider()
 
