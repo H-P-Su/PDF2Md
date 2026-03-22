@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-SUMMARIZER_VERSION = "0.5"
+SUMMARIZER_VERSION = "0.7"
 
 _MAX_CHARS = 100_000  # ~25 k tokens; covers virtually all academic papers
 
@@ -55,10 +55,21 @@ Paper:
 
 _NEWS_PROMPT = """\
 Rewrite the following academic paper as a news article using the inverted \
-pyramid structure (most important information first). Answer the 5 W's: \
-Who, What, When, Where, Why (and How). Write for a general audience. \
-Use short paragraphs and plain language — avoid academic jargon. \
+pyramid structure (most important information first). Write for a general \
+audience. Use short paragraphs and plain language — avoid academic jargon. \
 Lead with the single most newsworthy finding.
+
+Strict rules — violations will make the article unusable:
+- NEVER use placeholders such as [Author Name], [Institution], [Journal], \
+[DOI], [Lead Researcher], or any bracketed or parenthetical stand-ins. \
+If a piece of information is not explicitly stated in the paper, leave it \
+out completely — do not mark its absence in any way.
+- Author names: use the first author's name only if it appears clearly in \
+the paper. Otherwise refer to "the researchers" or "the authors".
+- Institution: mention it only if it appears clearly in the paper. \
+Otherwise omit it entirely — not even a blank or placeholder.
+- Journal and DOI: include only if present in the paper. Otherwise omit.
+- Quotes: do not invent dialogue. Paraphrase findings instead.
 
 Paper:
 

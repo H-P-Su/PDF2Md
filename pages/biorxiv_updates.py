@@ -19,7 +19,7 @@ from services.biorxiv import (
 from services.converter import convert_pdf_to_markdown
 from services.summarizer import (
     generate_summary, summary_exists, load_summary, get_summary_meta,
-    generate_news, news_exists, load_news, get_news_meta,
+    generate_news, news_exists, load_news, get_news_meta, clear_news,
 )
 
 # ── Query-param date selection (calendar clicks) ──────────────────────────────
@@ -715,7 +715,8 @@ for paper in visible_papers:
                         st.info("Summary not available.")
 
                 with tab_news:
-                    md_path = paper.get("md_path", "")
+                    md_path  = paper.get("md_path", "")
+                    ollama_ok = _ollama_running()
                     if md_path and news_exists(md_path):
                         meta = get_news_meta(md_path)
                         if meta:
@@ -724,18 +725,24 @@ for paper in visible_papers:
                                 f"Generated {meta.get('generated_at', '')[:10]}"
                             )
                         st.markdown(load_news(md_path))
+                        if st.button("↺ Regenerate news article",
+                                     key=f"regen_news_{doi_to_key(doi)}",
+                                     disabled=not ollama_ok,
+                                     help="Ollama must be running" if not ollama_ok else ""):
+                            with st.spinner("Regenerating…"):
+                                clear_news(md_path)
+                                generate_news(Path(md_path).read_text(encoding="utf-8"), md_path)
+                            st.rerun()
                     else:
                         st.info("News article not available.")
-                        if _ollama_running():
-                            if st.button("Generate News Article",
-                                         key=f"gen_news_{doi_to_key(doi)}",
-                                         type="primary"):
-                                with st.spinner("Generating…"):
-                                    generate_news(
-                                        Path(md_path).read_text(encoding="utf-8"),
-                                        md_path,
-                                    )
-                                st.rerun()
+                        if st.button("Generate News Article",
+                                     key=f"gen_news_{doi_to_key(doi)}",
+                                     type="primary",
+                                     disabled=not ollama_ok,
+                                     help="Ollama must be running" if not ollama_ok else ""):
+                            with st.spinner("Generating…"):
+                                generate_news(Path(md_path).read_text(encoding="utf-8"), md_path)
+                            st.rerun()
 
                 # ── ML label ──────────────────────────────────────────────
                 is_ignored = paper.get("ml_label") == "negative"
