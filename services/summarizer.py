@@ -31,8 +31,11 @@ get_default_backend() to recognise a new PDF2MD_BACKEND value.
 import json
 import os
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+SUMMARIZER_VERSION = "0.5"
 
 _MAX_CHARS = 100_000  # ~25 k tokens; covers virtually all academic papers
 
@@ -161,6 +164,33 @@ def _news_path(md_path: str) -> Path:
     return Path(md_path).parent / "news.md"
 
 
+def _summary_meta_path(md_path: str) -> Path:
+    return Path(md_path).parent / "summary.meta.json"
+
+
+def _news_meta_path(md_path: str) -> Path:
+    return Path(md_path).parent / "news.meta.json"
+
+
+def _write_meta(meta_path: Path) -> None:
+    meta_path.write_text(
+        json.dumps({
+            "version":      SUMMARIZER_VERSION,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_meta(meta_path: Path) -> dict:
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def summary_exists(md_path: str) -> bool:
     return _summary_path(md_path).exists()
 
@@ -177,16 +207,26 @@ def load_news(md_path: str) -> str:
     return _news_path(md_path).read_text(encoding="utf-8")
 
 
+def get_summary_meta(md_path: str) -> dict:
+    """Return metadata dict with 'version' and 'generated_at', or {} if missing."""
+    return _load_meta(_summary_meta_path(md_path))
+
+
+def get_news_meta(md_path: str) -> dict:
+    """Return metadata dict with 'version' and 'generated_at', or {} if missing."""
+    return _load_meta(_news_meta_path(md_path))
+
+
 def clear_summary(md_path: str) -> None:
-    p = _summary_path(md_path)
-    if p.exists():
-        p.unlink()
+    for p in (_summary_path(md_path), _summary_meta_path(md_path)):
+        if p.exists():
+            p.unlink()
 
 
 def clear_news(md_path: str) -> None:
-    p = _news_path(md_path)
-    if p.exists():
-        p.unlink()
+    for p in (_news_path(md_path), _news_meta_path(md_path)):
+        if p.exists():
+            p.unlink()
 
 
 # ── Public generation functions ───────────────────────────────────────────────
@@ -200,6 +240,7 @@ def generate_summary(
     b = backend or get_default_backend()
     result = b.complete(_SUMMARY_PROMPT.format(content=md_text[:_MAX_CHARS]))
     _summary_path(md_path).write_text(result, encoding="utf-8")
+    _write_meta(_summary_meta_path(md_path))
     return result
 
 
@@ -212,4 +253,5 @@ def generate_news(
     b = backend or get_default_backend()
     result = b.complete(_NEWS_PROMPT.format(content=md_text[:_MAX_CHARS]))
     _news_path(md_path).write_text(result, encoding="utf-8")
+    _write_meta(_news_meta_path(md_path))
     return result

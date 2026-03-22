@@ -88,6 +88,60 @@ def paper_exists(filename: str) -> bool:
     return row is not None
 
 
+def register_external_paper(
+    title: str,
+    filename: str,
+    pdf_path: str,
+    md_path: str,
+    folder_id: int | None = None,
+) -> int:
+    """Register a paper that already exists on disk without copying files.
+
+    Returns the new paper_id, or the existing paper_id if already registered.
+    """
+    conn = get_connection()
+    existing = conn.execute(
+        "SELECT id, folder_id FROM papers WHERE filename = ?", (filename,)
+    ).fetchone()
+    if existing:
+        # Move to the target folder if not already there
+        if folder_id is not None and existing["folder_id"] != folder_id:
+            conn.execute(
+                "UPDATE papers SET folder_id = ? WHERE id = ?",
+                (folder_id, existing["id"]),
+            )
+            conn.commit()
+        conn.close()
+        return existing["id"]
+    cur = conn.execute(
+        "INSERT INTO papers (title, filename, folder_id, pdf_path, md_path) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (title, filename, folder_id, pdf_path, md_path),
+    )
+    paper_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return paper_id
+
+
+def get_folder_by_name(name: str):
+    """Return the folder row with the given name, or None."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM folders WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def get_or_create_folder(name: str) -> int:
+    """Return the id of the named folder, creating it if it doesn't exist."""
+    row = get_folder_by_name(name)
+    if row:
+        return row["id"]
+    return create_folder(name)
+
+
 def rename_paper(paper_id: int, new_title: str):
     conn = get_connection()
     conn.execute("UPDATE papers SET title = ? WHERE id = ?", (new_title, paper_id))

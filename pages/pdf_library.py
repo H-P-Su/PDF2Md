@@ -10,6 +10,7 @@ from services.metadata import extract_metadata
 from services.summarizer import (
     summary_exists, news_exists,
     load_summary, load_news,
+    get_summary_meta, get_news_meta,
     clear_summary, clear_news,
     generate_summary, generate_news,
 )
@@ -21,8 +22,10 @@ from services.library import (
     get_comments, add_comment, update_comment, delete_comment,
     get_all_tags, create_tag, delete_tag, get_paper_tags,
     add_paper_tag, remove_paper_tag,
+    register_external_paper, get_folder_by_name, get_or_create_folder,
     TAG_COLORS,
 )
+from services.biorxiv import load_all_downloaded_papers
 
 # ── Session state ─────────────────────────────────────────────────────────────
 _defaults = {
@@ -238,6 +241,29 @@ with st.sidebar:
 
 
 # ── Main panel ────────────────────────────────────────────────────────────────
+_col_hdr, _col_gear = st.columns([11, 1])
+with _col_gear:
+    with st.popover("⚙️"):
+        st.markdown("**Sync from bioRxiv Updates**")
+        st.caption("Register all downloaded bioRxiv papers in the PDF Library database.")
+        if st.button("🔄 Sync from bioRxiv", use_container_width=True, key="lib_sync"):
+            all_downloaded = load_all_downloaded_papers()
+            folder_id = get_or_create_folder("BioRxiv")
+            new_count = already_count = 0
+            for p in all_downloaded:
+                if paper_exists(p["doi"]):
+                    already_count += 1
+                else:
+                    register_external_paper(
+                        title=p["title"],
+                        filename=p["doi"],
+                        pdf_path=p["pdf_path"],
+                        md_path=p["md_path"],
+                        folder_id=folder_id,
+                    )
+                    new_count += 1
+            st.success(f'{new_count} added, {already_count} already registered in "BioRxiv" folder.')
+
 if st.session_state.selected_paper_id is None:
     st.title("PDF Library")
     st.info("Upload a PDF from the sidebar, or select a paper from the library.")
@@ -450,6 +476,12 @@ else:
 
     with tab_summary:
         if summary_exists(md_path):
+            meta = get_summary_meta(md_path)
+            if meta:
+                st.caption(
+                    f"Summarizer v{meta.get('version', '?')} · "
+                    f"Generated {meta.get('generated_at', '')[:10]}"
+                )
             st.markdown(load_summary(md_path))
             if st.button("↺ Regenerate summary", key="regen_summary"):
                 clear_summary(md_path)
@@ -463,6 +495,12 @@ else:
 
     with tab_news:
         if news_exists(md_path):
+            meta = get_news_meta(md_path)
+            if meta:
+                st.caption(
+                    f"Summarizer v{meta.get('version', '?')} · "
+                    f"Generated {meta.get('generated_at', '')[:10]}"
+                )
             st.markdown(load_news(md_path))
             if st.button("↺ Regenerate news article", key="regen_news"):
                 clear_news(md_path)

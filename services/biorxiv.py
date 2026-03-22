@@ -230,6 +230,21 @@ def load_cached_papers(date: str, include_hidden: bool = False) -> list[dict]:
     return papers
 
 
+def reset_download(date: str, doi: str) -> None:
+    """Delete downloaded files and clear pdf_path/md_path in metadata.
+
+    Leaves metadata.json and keywords intact so the paper still appears in
+    the list. The next download attempt will re-fetch the PDF from scratch.
+    """
+    d = _paper_dir(date, doi)
+    for filename in ("paper.pdf", "paper.md", "summary.md", "summary.meta.json",
+                     "news.md", "news.meta.json"):
+        p = d / filename
+        if p.exists():
+            p.unlink()
+    update_metadata(date, doi, pdf_path="", md_path="", keywords=[])
+
+
 def mark_excluded(date: str, doi: str) -> None:
     """Hide a paper and mark it as excluded from ML.
 
@@ -300,6 +315,60 @@ def extract_keywords(title: str, abstract: str, top_n: int = 15) -> list[str]:
 
 
 # ── Global keywords.json ──────────────────────────────────────────────────────
+
+def load_all_downloaded_papers() -> list[dict]:
+    """Return metadata for every paper that has a pdf_path set, across all dates."""
+    papers = []
+    for meta_file in PAPERS_DIR.glob("*/*/metadata.json"):
+        try:
+            p = json.loads(meta_file.read_text(encoding="utf-8"))
+            if p.get("pdf_path") and p.get("md_path"):
+                papers.append(p)
+        except Exception:
+            pass
+    return papers
+
+
+def get_downloaded_counts_for_month(year: int, month: int) -> dict[int, int]:
+    """Return {day: count} of papers with a pdf_path set for every day in the given month."""
+    counts: dict[int, int] = {}
+    prefix = f"{year:04d}-{month:02d}-"
+    for day_dir in PAPERS_DIR.glob(f"{prefix}[0-9][0-9]"):
+        if not day_dir.is_dir():
+            continue
+        try:
+            day = int(day_dir.name[8:10])
+            count = 0
+            for meta_file in day_dir.glob("*/metadata.json"):
+                try:
+                    p = json.loads(meta_file.read_text(encoding="utf-8"))
+                    if p.get("pdf_path"):
+                        count += 1
+                except Exception:
+                    pass
+            if count > 0:
+                counts[day] = count
+        except (ValueError, IndexError):
+            pass
+    return counts
+
+
+def get_paper_counts_for_month(year: int, month: int) -> dict[int, int]:
+    """Return {day: count} of cached metadata files for every day in the given month."""
+    counts: dict[int, int] = {}
+    prefix = f"{year:04d}-{month:02d}-"
+    for day_dir in PAPERS_DIR.glob(f"{prefix}[0-9][0-9]"):
+        if not day_dir.is_dir():
+            continue
+        try:
+            day = int(day_dir.name[8:10])
+            count = sum(1 for _ in day_dir.glob("*/metadata.json"))
+            if count > 0:
+                counts[day] = count
+        except (ValueError, IndexError):
+            pass
+    return counts
+
 
 def load_keywords() -> dict[str, int]:
     """Load the global keyword frequency file."""
