@@ -113,6 +113,98 @@ def _clean_for_tts(md_text: str) -> str:
     return '\n'.join(cleaned)
 
 
+_WORDS_PER_MINUTE = 150
+_DIGEST_MAX_WORDS = _WORDS_PER_MINUTE * 20  # 3 000 words ≈ 20 minutes
+
+
+def _first_n_words(text: str, n: int) -> str:
+    words = text.split()
+    if len(words) <= n:
+        return text
+    return " ".join(words[:n]) + "."
+
+
+def build_daily_digest_script(date_str: str, papers: list[dict]) -> str:
+    """Assemble a spoken-word script for *papers*, fitting within ~20 minutes.
+
+    For each paper the best available content is used in priority order:
+    news.md → summary.md → abstract.  The per-paper word budget is split
+    evenly from the remaining budget after overhead text is accounted for.
+    """
+    from datetime import date as _date
+    from pathlib import Path
+
+    d = _date.fromisoformat(date_str)
+    day_label = d.strftime("%A, %B %-d, %Y")
+    n = len(papers)
+    categories = list(dict.fromkeys(p.get("category", "") for p in papers))
+
+    intro_lines = [
+        f"bioRxiv digest for {day_label}.",
+        f"{n} paper{'s' if n != 1 else ''} across "
+        f"{len(categories)} {'category' if len(categories) == 1 else 'categories'}.",
+        "",
+    ]
+
+    # Reserve words for overhead: intro + ~12 words per paper (title / author header)
+    overhead = len(" ".join(intro_lines).split()) + n * 12
+    per_paper = max(30, (_DIGEST_MAX_WORDS - overhead) // n) if n else 0
+
+    lines = list(intro_lines)
+    current_cat = None
+    for paper in papers:
+        cat = paper.get("category", "Uncategorized")
+        if cat != current_cat:
+            current_cat = cat
+            lines += ["", cat + ".", ""]
+
+        title = paper.get("title", "Untitled")
+        authors = paper.get("authors", "")
+        first_author = (
+            authors.split(";")[0].strip().split(",")[0].strip()
+            if authors else ""
+        )
+
+        # Best available content
+        content = ""
+        md_path = paper.get("md_path", "")
+        if md_path:
+            paper_dir = Path(md_path).parent
+            for fname in ("news.md", "summary.md"):
+                candidate = paper_dir / fname
+                if candidate.exists():
+                    content = candidate.read_text(encoding="utf-8")
+                    break
+        if not content:
+            content = paper.get("abstract", "")
+
+        content = _first_n_words(_clean_for_tts(content), per_paper)
+
+        header = f"{title}."
+        if first_author:
+            header += f" By {first_author}."
+        lines += [header, content, ""]
+
+    return "\n".join(lines)
+
+
+def daily_digest_mp3(date_str: str, papers: list[dict]) -> bytes:
+    """Return MP3 bytes for the daily digest, generating and caching on first call.
+
+    The file is stored at ``storage/Biorxiv_papers/{date_str}/digest.mp3``.
+    Delete the file to force regeneration.
+    """
+    cache_path = Path("storage/Biorxiv_papers") / date_str / "digest.mp3"
+    if cache_path.exists():
+        return cache_path.read_bytes()
+
+    script = build_daily_digest_script(date_str, papers)
+    mp3 = markdown_to_mp3(script)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(mp3)
+    return mp3
+
+
 def markdown_to_mp3(md_text: str, voice: str = "en_US-amy-medium") -> bytes:
     """Convert markdown paper text to MP3 bytes using Piper (fully local/offline)."""
     from piper import PiperVoice

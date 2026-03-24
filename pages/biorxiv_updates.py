@@ -14,9 +14,11 @@ from services.biorxiv import (
     has_pdf, has_markdown, download_pdf, extract_keywords,
     update_keywords_file, update_metadata, load_metadata,
     mark_excluded, mark_ignored, mark_ignored_clear, reset_download, doi_to_key, _paper_dir,
-    get_paper_counts_for_month, get_downloaded_counts_for_month, load_all_downloaded_papers,
+    get_paper_counts_for_month, get_downloaded_counts_for_month,
+    get_partial_fetch_days_for_month, load_all_downloaded_papers,
 )
 from services.converter import convert_pdf_to_markdown
+from services.tts import daily_digest_mp3
 from services.summarizer import (
     generate_summary, summary_exists, load_summary, get_summary_meta,
     generate_news, news_exists, load_news, get_news_meta, clear_news,
@@ -116,6 +118,7 @@ with st.sidebar:
     # ── HTML calendar grid ────────────────────────────────────────────────────
     paper_counts     = get_paper_counts_for_month(cal_year, cal_month)
     downloaded_counts = get_downloaded_counts_for_month(cal_year, cal_month)
+    partial_days     = get_partial_fetch_days_for_month(cal_year, cal_month)
     sel_date         = st.session_state.biorxiv_date
 
     cells = ""
@@ -125,10 +128,12 @@ with st.sidebar:
             if day == 0:
                 cells += "<td></td>"
                 continue
-            day_date  = date(cal_year, cal_month, day)
-            is_future = day_date >= today
-            is_sel    = (day_date == sel_date)
-            count     = paper_counts.get(day, 0)
+            day_date   = date(cal_year, cal_month, day)
+            is_future  = day_date > today
+            is_today   = day_date == today
+            is_sel     = (day_date == sel_date)
+            is_partial = day in partial_days
+            count      = paper_counts.get(day, 0)
 
             num_style  = (
                 "font-size:16px;font-weight:700;line-height:1;"
@@ -140,9 +145,14 @@ with st.sidebar:
             cnt_size  = "9px" if count > 99 else "12px"
             has_dl    = downloaded_counts.get(day, 0) > 0
             cnt_color = "#4a9" if has_dl else "#aaa"
+            partial_marker = (
+                "<div style='font-size:9px;color:#f90;line-height:1;margin-top:0px'>*partial</div>"
+                if is_partial or is_today else ""
+            )
             cnt_html  = (
                 f"<div style='font-size:{cnt_size};color:{cnt_color};line-height:1.1;margin-top:1px'>"
                 f"{count if count > 0 else '&nbsp;'}</div>"
+                f"{partial_marker}"
             )
             if is_future:
                 day_html = f"<div style='{num_style}'>{day}</div>"
@@ -185,7 +195,7 @@ with st.sidebar:
         )
     with c3:
         if st.button("▶", key="day_next", use_container_width=True,
-                     disabled=(sel_date >= yesterday)):
+                     disabled=(sel_date >= today)):
             next_day = sel_date + timedelta(days=1)
             st.session_state.biorxiv_date     = next_day
             st.session_state.biorxiv_cal_year  = next_day.year
@@ -321,10 +331,12 @@ with col_opts:
 
 st.subheader(selected_date.strftime("%A, %B %-d %Y"))
 
-col_fetch, col_spacer = st.columns([2, 5])
+col_fetch, col_digest, col_spacer = st.columns([2, 2, 3])
 with col_fetch:
     fetch_clicked = st.button("Fetch papers for this date", type="primary",
                                use_container_width=True)
+with col_digest:
+    digest_clicked = st.button("🎧 Audio digest", use_container_width=True)
 
 # ── Fetch from API ────────────────────────────────────────────────────────────
 if fetch_clicked:
@@ -354,6 +366,15 @@ papers = load_cached_papers(date_str)
 if not papers:
     st.info(f"No papers cached for {date_str}. Click **Fetch papers for this date**.")
     st.stop()
+
+# ── Audio digest ──────────────────────────────────────────────────────────────
+digest_cache = Path("storage/Biorxiv_papers") / date_str / "digest.mp3"
+if digest_clicked:
+    with st.spinner("Generating audio digest… this may take a minute."):
+        mp3 = daily_digest_mp3(date_str, papers)
+    st.audio(mp3, format="audio/mp3")
+elif digest_cache.exists():
+    st.audio(digest_cache.read_bytes(), format="audio/mp3")
 
 # ── Auto-score stale papers for this date ─────────────────────────────────────
 from services.ml import score_papers_for_date, model_exists as _model_exists
@@ -674,7 +695,7 @@ for paper in visible_papers:
     col_chk, col_card = st.columns([0.5, 11])
     with col_chk:
         selected = st.checkbox(
-            "", value=(doi in st.session_state.biorxiv_selected),
+            "Select paper", value=(doi in st.session_state.biorxiv_selected),
             key=f"sel_{doi_to_key(doi)}",
             label_visibility="collapsed",
         )

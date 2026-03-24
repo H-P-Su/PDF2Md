@@ -131,6 +131,7 @@ PDF2MD_OLLAMA_HOST=http://192.168.1.10:11434 streamlit run app.py
 | `PDF2MD_OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `PDF2MD_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model (backend=claude only) |
 | `ANTHROPIC_API_KEY` | — | Required only when `PDF2MD_BACKEND=claude` |
+| `PDF2MD_DIGEST_DEST` | — | Directory to copy `biorxiv_digest.mp3` after generation (e.g. a podcast folder or network share). File is overwritten daily. |
 
 ---
 
@@ -167,13 +168,46 @@ Schedule as a daily cron job (runs at 6 AM):
 crontab -e
 # Add:
 0 6 * * * cd /path/to/PDF2Md && .venv/bin/python fetch_biorxiv.py >> logs/fetch.log 2>&1
+
+# Or fetch + generate audio digest in one job:
+0 6 * * * cd /path/to/PDF2Md && .venv/bin/python fetch_biorxiv.py >> logs/fetch.log 2>&1 && .venv/bin/python digest_biorxiv.py >> logs/digest.log 2>&1
 ```
+
+Note: today's date is now a valid fetch target (papers already posted will be included; the calendar marks such days as *partial* to remind you to re-fetch later).
 
 See **[examples.md](examples.md)** for more CLI examples.
 
 ---
 
-## 8. ML recommendations
+## 8. Daily audio digest (optional)
+
+Generate a spoken MP3 digest of a day's papers. Content priority per paper: news article → summary → abstract. Total length is capped at ~20 minutes.
+
+```bash
+# Generate digest for yesterday (default)
+python digest_biorxiv.py
+
+# Specific date
+python digest_biorxiv.py --date 2026-03-21
+
+# Regenerate even if digest.mp3 already exists
+python digest_biorxiv.py --date 2026-03-21 --refresh
+```
+
+The digest is saved to `storage/Biorxiv_papers/{date}/digest.mp3` and also available via the **🎧 Audio digest** button in the bioRxiv Updates page.
+
+To automatically copy it to a podcast folder or media server, set `PDF2MD_DIGEST_DEST`:
+
+```bash
+export PDF2MD_DIGEST_DEST="/Volumes/Podcasts/biorxiv"
+python digest_biorxiv.py
+# → writes storage/Biorxiv_papers/{date}/digest.mp3
+# → copies to /Volumes/Podcasts/biorxiv/biorxiv_digest.mp3  (overwritten daily)
+```
+
+---
+
+## 9. ML recommendations
 
 The ML scoring pipeline requires no setup — it activates automatically once you have downloaded at least one paper (positive example).
 
@@ -185,7 +219,7 @@ The model upgrades from TF-IDF cosine similarity (cold start, any number of posi
 
 ---
 
-## 9. MCP server (Claude Desktop integration)
+## 10. MCP server (Claude Desktop integration)
 
 The MCP server lets Claude Desktop query your library directly.
 
@@ -206,7 +240,7 @@ Restart Claude Desktop. The library tools will appear in the tool picker.
 
 ---
 
-## 10. Running as a background service (macOS / Linux)
+## 11. Running as a background service (macOS / Linux)
 
 ```bash
 # Start in background, log to app.log
@@ -222,7 +256,7 @@ kill $(cat app.pid)
 
 ---
 
-## 11. Backing up your library
+## 12. Backing up your library
 
 The entire library lives in the `storage/` directory:
 
@@ -236,7 +270,7 @@ tar -xzf library-backup-20260322.tar.gz
 
 ---
 
-## 12. Packaging for deployment
+## 13. Packaging for deployment
 
 Create a clean zip of source files only (no papers, no database, no venv):
 

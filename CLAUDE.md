@@ -14,9 +14,13 @@ streamlit run app.py
 # Run on a server (all interfaces, custom port)
 streamlit run app.py --server.address 0.0.0.0 --server.port 8501
 
-# Pre-fetch bioRxiv metadata
+# Pre-fetch bioRxiv metadata (today's date is now valid)
 python fetch_biorxiv.py
 python fetch_biorxiv.py --days 7 --refresh
+
+# Generate daily audio digest
+python digest_biorxiv.py
+python digest_biorxiv.py --date 2026-03-21 --refresh
 ```
 
 ## Architecture
@@ -25,7 +29,8 @@ Multi-page Streamlit app (`st.navigation`) with two pages.
 
 ```
 app.py                      # Entry point — registers pages, calls init_db()
-fetch_biorxiv.py            # CLI tool to pre-fetch bioRxiv metadata
+fetch_biorxiv.py            # CLI tool to pre-fetch bioRxiv metadata (today allowed)
+digest_biorxiv.py           # CLI tool to generate daily audio digest MP3
 pages/
   pdf_library.py            # PDF Library page
   biorxiv_updates.py        # bioRxiv Updates page

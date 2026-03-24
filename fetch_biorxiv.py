@@ -22,9 +22,9 @@ python fetch_biorxiv.py --from 2026-03-18 --to 2026-03-21
 # Force re-fetch even if already cached (e.g. after changing categories)
 python fetch_biorxiv.py --days 7 --refresh
 
-Cron example (fetch yesterday's papers every day at 06:00)
------------------------------------------------------------
-0 6 * * * cd /path/to/PDF2Md && .venv/bin/python fetch_biorxiv.py >> logs/fetch.log 2>&1
+Cron example (fetch yesterday's papers and generate digest every day at 06:00)
+------------------------------------------------------------------------------
+0 6 * * * cd /path/to/PDF2Md && .venv/bin/python fetch_biorxiv.py >> logs/fetch.log 2>&1 && .venv/bin/python digest_biorxiv.py >> logs/digest.log 2>&1
 """
 
 import argparse
@@ -132,10 +132,10 @@ def main() -> None:
     else:
         dates = [yesterday]
 
-    # Refuse to fetch today or future dates
-    dates = [d for d in dates if d < date.today()]
+    # Refuse to fetch future dates
+    dates = [d for d in dates if d <= date.today()]
     if not dates:
-        print("No valid dates to fetch (today and future dates are excluded).")
+        print("No valid dates to fetch (future dates are excluded).")
         sys.exit(0)
 
     for d in dates:

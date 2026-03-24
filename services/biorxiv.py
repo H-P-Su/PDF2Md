@@ -2,6 +2,8 @@
 
 import json
 import re
+import time
+import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime
@@ -128,10 +130,18 @@ def has_markdown(date: str, doi: str) -> bool:
 
 # ── API fetch ─────────────────────────────────────────────────────────────────
 
-def _api_get(url: str) -> dict:
+def _api_get(url: str, retries: int = 3, timeout: int = 45) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read())
+    last_exc: Exception = RuntimeError("no attempts made")
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except (TimeoutError, urllib.error.URLError) as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)  # 1s, 2s back-off
+    raise last_exc
 
 
 def fetch_papers(date: str, categories: list[str]) -> list[dict]:
@@ -364,6 +374,35 @@ def get_downloaded_counts_for_month(year: int, month: int) -> dict[int, int]:
         except (ValueError, IndexError):
             pass
     return counts
+
+
+def get_partial_fetch_days_for_month(year: int, month: int) -> set[int]:
+    """Return day numbers where papers were fetched before that day ended.
+
+    A day is considered partial when any of its cached papers has a
+    ``fetched_at`` timestamp whose UTC date matches the paper's own ``date``
+    field — meaning the fetch happened while new submissions could still arrive.
+    """
+    partial: set[int] = set()
+    prefix = f"{year:04d}-{month:02d}-"
+    for day_dir in PAPERS_DIR.glob(f"{prefix}[0-9][0-9]"):
+        if not day_dir.is_dir():
+            continue
+        try:
+            day = int(day_dir.name[8:10])
+            day_str = day_dir.name  # YYYY-MM-DD
+            for meta_file in day_dir.glob("*/metadata.json"):
+                try:
+                    p = json.loads(meta_file.read_text(encoding="utf-8"))
+                    fetched_at = p.get("fetched_at", "")
+                    if fetched_at and fetched_at[:10] == day_str:
+                        partial.add(day)
+                        break
+                except Exception:
+                    pass
+        except (ValueError, IndexError):
+            pass
+    return partial
 
 
 def get_paper_counts_for_month(year: int, month: int) -> dict[int, int]:
