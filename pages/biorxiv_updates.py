@@ -30,7 +30,7 @@ _yesterday = _today - timedelta(days=1)
 if "date" in st.query_params:
     try:
         _clicked = date.fromisoformat(st.query_params["date"])
-        if _clicked <= _yesterday:
+        if _clicked <= _today:
             st.session_state.biorxiv_date      = _clicked
             st.session_state.biorxiv_cal_year  = _clicked.year
             st.session_state.biorxiv_cal_month = _clicked.month
@@ -370,11 +370,13 @@ if not papers:
 # ── Audio digest ──────────────────────────────────────────────────────────────
 digest_cache = Path("storage/Biorxiv_papers") / date_str / "digest.mp3"
 if digest_clicked:
-    with st.spinner("Generating audio digest… this may take a minute."):
-        mp3 = daily_digest_mp3(date_str, papers)
-    st.audio(mp3, format="audio/mp3")
-elif digest_cache.exists():
-    st.audio(digest_cache.read_bytes(), format="audio/mp3")
+    try:
+        with st.spinner("Generating audio digest… this may take a minute."):
+            daily_digest_mp3(date_str, papers)
+    except Exception as exc:
+        st.error(f"Audio digest failed: {exc}")
+if digest_cache.exists():
+    st.audio(str(digest_cache), format="audio/mp3")
 
 # ── Auto-score stale papers for this date ─────────────────────────────────────
 from services.ml import score_papers_for_date, model_exists as _model_exists

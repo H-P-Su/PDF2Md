@@ -114,7 +114,12 @@ def _clean_for_tts(md_text: str) -> str:
 
 
 _WORDS_PER_MINUTE = 150
-_DIGEST_MAX_WORDS = _WORDS_PER_MINUTE * 20  # 3 000 words ≈ 20 minutes
+
+# Per-paper word budgets (at 150 wpm):
+#   metadata-only  → 10–20 s  ≈ 35 words
+#   downloaded     → 30–60 s  ≈ 110 words
+_WORDS_METADATA   = 35
+_WORDS_DOWNLOADED = 110
 
 
 def _first_n_words(text: str, n: int) -> str:
@@ -125,11 +130,10 @@ def _first_n_words(text: str, n: int) -> str:
 
 
 def build_daily_digest_script(date_str: str, papers: list[dict]) -> str:
-    """Assemble a spoken-word script for *papers*, fitting within ~20 minutes.
+    """Assemble a spoken-word script for *papers*.
 
-    For each paper the best available content is used in priority order:
-    news.md → summary.md → abstract.  The per-paper word budget is split
-    evenly from the remaining budget after overhead text is accounted for.
+    Downloaded papers (have news.md or summary.md) get ~110 words (~45 s).
+    Metadata-only papers get ~35 words (~15 s) from the abstract.
     """
     from datetime import date as _date
     from pathlib import Path
@@ -139,18 +143,13 @@ def build_daily_digest_script(date_str: str, papers: list[dict]) -> str:
     n = len(papers)
     categories = list(dict.fromkeys(p.get("category", "") for p in papers))
 
-    intro_lines = [
+    lines = [
         f"bioRxiv digest for {day_label}.",
         f"{n} paper{'s' if n != 1 else ''} across "
         f"{len(categories)} {'category' if len(categories) == 1 else 'categories'}.",
         "",
     ]
 
-    # Reserve words for overhead: intro + ~12 words per paper (title / author header)
-    overhead = len(" ".join(intro_lines).split()) + n * 12
-    per_paper = max(30, (_DIGEST_MAX_WORDS - overhead) // n) if n else 0
-
-    lines = list(intro_lines)
     current_cat = None
     for paper in papers:
         cat = paper.get("category", "Uncategorized")
@@ -165,8 +164,9 @@ def build_daily_digest_script(date_str: str, papers: list[dict]) -> str:
             if authors else ""
         )
 
-        # Best available content
+        # Best available content; determines word budget
         content = ""
+        budget = _WORDS_METADATA
         md_path = paper.get("md_path", "")
         if md_path:
             paper_dir = Path(md_path).parent
@@ -174,18 +174,25 @@ def build_daily_digest_script(date_str: str, papers: list[dict]) -> str:
                 candidate = paper_dir / fname
                 if candidate.exists():
                     content = candidate.read_text(encoding="utf-8")
+                    budget = _WORDS_DOWNLOADED
                     break
         if not content:
             content = paper.get("abstract", "")
 
-        content = _first_n_words(_clean_for_tts(content), per_paper)
+        content = _first_n_words(_clean_for_tts(content), budget)
 
         header = f"{title}."
         if first_author:
             header += f" By {first_author}."
         lines += [header, content, ""]
 
-    return "\n".join(lines)
+    script = "\n".join(lines)
+    # Hard cap at 20 minutes
+    max_words = _WORDS_PER_MINUTE * 20
+    words = script.split()
+    if len(words) > max_words:
+        script = " ".join(words[:max_words])
+    return script
 
 
 def daily_digest_mp3(date_str: str, papers: list[dict]) -> bytes:

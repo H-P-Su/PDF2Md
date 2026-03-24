@@ -379,10 +379,13 @@ def get_downloaded_counts_for_month(year: int, month: int) -> dict[int, int]:
 def get_partial_fetch_days_for_month(year: int, month: int) -> set[int]:
     """Return day numbers where papers were fetched before that day ended.
 
-    A day is considered partial when any of its cached papers has a
-    ``fetched_at`` timestamp whose UTC date matches the paper's own ``date``
-    field — meaning the fetch happened while new submissions could still arrive.
+    A day is considered partial when any of its cached papers was fetched
+    within 36 hours of midnight UTC at the start of the paper's date.  The
+    36-hour window covers all US timezones (UTC-12 to UTC-4) plus a margin,
+    so a fetch at e.g. 00:22 UTC on the following calendar day is still
+    treated as same-day in local time.
     """
+    from datetime import timedelta as _td
     partial: set[int] = set()
     prefix = f"{year:04d}-{month:02d}-"
     for day_dir in PAPERS_DIR.glob(f"{prefix}[0-9][0-9]"):
@@ -390,12 +393,17 @@ def get_partial_fetch_days_for_month(year: int, month: int) -> set[int]:
             continue
         try:
             day = int(day_dir.name[8:10])
-            day_str = day_dir.name  # YYYY-MM-DD
+            # Cutoff: start-of-day UTC + 36 h
+            day_start = datetime(year, month, day)
+            cutoff = day_start + _td(hours=36)
             for meta_file in day_dir.glob("*/metadata.json"):
                 try:
                     p = json.loads(meta_file.read_text(encoding="utf-8"))
                     fetched_at = p.get("fetched_at", "")
-                    if fetched_at and fetched_at[:10] == day_str:
+                    if not fetched_at:
+                        continue
+                    fetched_dt = datetime.fromisoformat(fetched_at.rstrip("Z"))
+                    if fetched_dt < cutoff:
                         partial.add(day)
                         break
                 except Exception:
